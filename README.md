@@ -1,152 +1,93 @@
-# HIFETCH
+# HiFetch
 
-**This is the MAIN version of the HIFETCH and it's currently under VERY VERY ACTIVE DEVELOPMENT**
+A high-performance system information tool written in C that delivers comprehensive system analysis with optimized speed.
 
-A massive, high-performance system information tool written in C that aims to be faster than fastfetch.
-
-## DEVELOPMENT STATUS
-
-> **EXTREMELY ACTIVE DEVELOPMENT**
-> This is the **PRIMARY DEVELOPMENT BRANCH** of HIFETCH
->
-> **Continuous Integration**: Multiple commits daily
-> **Performance Focus**: Every optimization matters
-> **Feature Rich**: New modules added constantly
-> **Goal**: Faster than fastfetch with 10x more features
-
----
+> **Status**: Under Active Development
 
 ## Features
 
 ### Core System Information
-- **Hardware Detection**: Complete CPU, GPU, memory, storage, and network hardware analysis
-- **Performance Monitoring**: Real-time CPU usage, memory consumption, and I/O statistics
-- **Security Scanning**: Vulnerability detection, process monitoring, and security assessment
-- **Network Diagnostics**: Interface scanning, connectivity testing, and bandwidth monitoring
-- **Memory Optimization**: Advanced caching, memory pools, and leak detection
-- **System Profiling**: Function-level performance analysis and hotspot detection
-- **Advanced Display**: Multiple themes, animations, and terminal effects
+- **Hardware Detection**: CPU, GPU, memory, storage, and network analysis
+- **Performance Monitoring**: Real-time system statistics and resource usage
+- **Security Scanning**: Process monitoring and vulnerability detection
+- **Network Diagnostics**: Interface analysis and connectivity testing
+- **Advanced Display**: Clean output with hardware sensor readings
 
 ### Performance Optimizations
-- **Ultra-Fast Compilation**: `-O3 -march=native -flto -ffast-math` optimizations
-- **Memory-Mapped Caching**: Persistent cache for frequently accessed data
-- **Lock-Free Data Structures**: Atomic operations for multi-threaded performance
-- **SIMD Instructions**: Vectorized operations where applicable
-- **Branch Prediction Hints**: Optimized conditional execution
-- **Static Linking**: Reduced runtime overhead
+- **Aggressive Compilation**: `-O3 -march=native -flto -ffast-math` optimizations
+- **Memory Efficiency**: Optimized data structures and caching systems
+- **SIMD Instructions**: Vectorized operations for enhanced performance
+- **Low Overhead**: Minimal resource consumption during execution
 
-## Build System
+## Installation
 
-### Targets
+### Quick Install
+```bash
+# Download and install
+wget https://github.com/Bas3line/hifetch/releases/latest/download/hifetch
+chmod +x hifetch
+sudo mv hifetch /usr/local/bin/
+```
+
+### Build from Source
+```bash
+# Install dependencies
+sudo apt update && sudo apt install gcc libc6-dev
+
+# Clone and build
+git clone https://github.com/Bas3line/hifetch.git
+cd hifetch
+make clean && make -j$(nproc)
+
+# Install system-wide
+sudo cp bin/hifetch /usr/local/bin/
+```
+
+## Usage
+
+```bash
+# Basic system information
+hifetch
+
+# Additional tools
+make hitop    # Build htop replacement
+make bench    # Performance benchmarking
+```
+
+## Build Targets
+
 - `make` - Build main hifetch binary
-- `make hitop` - Build htop replacement
-- `make bench` - Performance benchmarking
+- `make hitop` - Build process monitor
+- `make bench` - Performance benchmarks
 - `make clean` - Clean build artifacts
 
-### Compilation Flags
-```bash
--O3 -march=native -mtune=native -flto -ffast-math -funroll-loops
--fomit-frame-pointer -finline-functions -DNDEBUG
-```
+## System Requirements
 
-## Performance Features
+- Linux-based operating system
+- GCC compiler (C2x standard support)
+- Minimal dependencies: libc, libpthread, libm
 
-### Memory Management
-- **Memory Pools**: Pre-allocated memory regions for fast allocation
-- **Caching System**: LRU cache for file contents and command outputs
-- **Leak Detection**: Runtime memory leak tracking and reporting
-- **Huge Pages**: Transparent huge page support for large allocations
+## Performance Goals
 
-### System Monitoring
-- **Real-time Metrics**: CPU, memory, disk, and network statistics
-- **Hardware Sensors**: Temperature, fan speed, and voltage monitoring
-- **Process Analysis**: Suspicious process detection and monitoring
-- **Security Assessment**: Vulnerability scanning and risk analysis
+- **Startup Time**: < 10ms
+- **Memory Usage**: < 5MB
+- **CPU Overhead**: < 1% during execution
+- **Hardware Detection**: Comprehensive PCI/USB enumeration
 
-### Network Diagnostics
-- **Interface Scanning**: Complete network interface analysis
-- **Connectivity Testing**: Internet connectivity and latency measurement
-- **DNS Performance**: DNS resolution time measurement
-- **Port Scanning**: Network port analysis and security assessment
+## Architecture
 
-## Code Statistics (Live Development Metrics)
+The codebase is organized into specialized modules:
 
-- **Total Files**: 23 source files *(growing daily)*
-- **Lines of Code**: 3,699+ lines *(rapidly expanding)*
-- **Modules**: 10+ specialized modules *(new ones weekly)*
-- **Functions**: 200+ optimized functions *(performance-critical)*
-- **Data Structures**: 50+ specialized structures *(memory-optimized)*
-- **Development Velocity**: **EXTREMELY HIGH**
+- **Hardware Detection**: CPU, GPU, storage, and network device enumeration
+- **System Monitoring**: Real-time metrics and sensor readings
+- **Security Analysis**: Process and vulnerability scanning
+- **Performance Profiling**: Function-level analysis and optimization
+- **Display Engine**: Formatted output and terminal rendering
 
-## Performance Goals (Under Active Optimization)
+## Contributing
 
-**LIVE DEVELOPMENT TARGETS**
-- **Startup Time**: < 10ms *(current optimization target)*
-- **Memory Usage**: < 5MB *(aggressive optimization ongoing)*
-- **CPU Usage**: < 1% during execution *(SIMD optimizations active)*
-- **Cache Hit Rate**: > 95% for repeated operations *(memory-mapped caching)*
-- **vs fastfetch**: **FASTER** *(primary development goal)*
+This project is under active development. Performance optimizations and feature additions are continuously integrated.
 
-## Advanced Features
+## License
 
-### Security Module
-- CVE vulnerability detection
-- Suspicious process monitoring
-- Open port analysis
-- User account security assessment
-- Firewall and security service status
-
-### Hardware Module
-- Complete PCI/USB device enumeration
-- Hardware sensor monitoring
-- Driver and firmware detection
-- Performance counter access
-
-### Performance Module
-- Function-level profiling
-- Memory allocation tracking
-- CPU performance counter access
-- I/O performance analysis
-
-## Build Instructions
-
-```bash
-# Install dependencies (minimal required)
-sudo apt update
-sudo apt install gcc libc6-dev
-
-# Build
-make clean
-make -j$(nproc)
-
-# Run
-./hifetch
-
-# Run htop replacement
-make hitop
-./hitop
-
-# Performance benchmark
-make bench
-```
-
-## Optimization Techniques
-
-1. **Compile-Time Optimizations**
-   - Link-time optimization (LTO)
-   - Profile-guided optimization ready
-   - Native CPU instruction targeting
-
-2. **Runtime Optimizations**
-   - Memory-mapped file access
-   - Cached system information
-   - Atomic operations for thread safety
-   - SIMD instruction utilization
-
-3. **System Integration**
-   - Direct system call usage
-   - Kernel bypass where possible
-   - Hardware performance counter access
-   - Memory prefetching
-
-This implementation represents a comprehensive, high-performance system information tool designed to maximize speed while providing extensive system analysis capabilities.
+MIT License - See LICENSE file for details.
