@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include "sysfetch.h"
+#ifdef __SSE4_2__
 #include <immintrin.h>
+#endif
 #include <cpuid.h>
 
 static int cpu_features_detected = 0;
@@ -12,13 +14,17 @@ void detect_cpu_features(void) {
 
     unsigned int eax, ebx, ecx, edx;
 
+#ifdef __SSE4_2__
     if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
         has_sse42 = (ecx & bit_SSE4_2) != 0;
     }
+#endif
 
+#ifdef __AVX2__
     if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
         has_avx2 = (ebx & bit_AVX2) != 0;
     }
+#endif
 
     cpu_features_detected = 1;
 }
@@ -26,6 +32,7 @@ void detect_cpu_features(void) {
 void fast_string_copy_simd(char *dest, const char *src, size_t len) {
     detect_cpu_features();
 
+#ifdef __AVX2__
     if (has_avx2 && len >= 32) {
         size_t simd_len = len & ~31;
         for (size_t i = 0; i < simd_len; i += 32) {
@@ -35,7 +42,10 @@ void fast_string_copy_simd(char *dest, const char *src, size_t len) {
         for (size_t i = simd_len; i < len; i++) {
             dest[i] = src[i];
         }
-    } else if (has_sse42 && len >= 16) {
+    } else
+#endif
+#ifdef __SSE4_2__
+    if (has_sse42 && len >= 16) {
         size_t simd_len = len & ~15;
         for (size_t i = 0; i < simd_len; i += 16) {
             __m128i data = _mm_loadu_si128((__m128i*)(src + i));
@@ -44,7 +54,9 @@ void fast_string_copy_simd(char *dest, const char *src, size_t len) {
         for (size_t i = simd_len; i < len; i++) {
             dest[i] = src[i];
         }
-    } else {
+    } else
+#endif
+    {
         memcpy(dest, src, len);
     }
     dest[len] = '\0';
@@ -53,6 +65,7 @@ void fast_string_copy_simd(char *dest, const char *src, size_t len) {
 int fast_string_compare_simd(const char *str1, const char *str2, size_t len) {
     detect_cpu_features();
 
+#ifdef __AVX2__
     if (has_avx2 && len >= 32) {
         size_t simd_len = len & ~31;
         for (size_t i = 0; i < simd_len; i += 32) {
@@ -66,7 +79,9 @@ int fast_string_compare_simd(const char *str1, const char *str2, size_t len) {
             if (str1[i] != str2[i]) return 0;
         }
         return 1;
-    } else {
+    } else
+#endif
+    {
         return memcmp(str1, str2, len) == 0;
     }
 }
@@ -74,6 +89,7 @@ int fast_string_compare_simd(const char *str1, const char *str2, size_t len) {
 void parallel_string_processing(char *buffer, size_t size) {
     detect_cpu_features();
 
+#ifdef __SSE4_2__
     if (!has_sse42) return;
 
     __m128i newlines = _mm_set1_epi8('\n');
@@ -102,4 +118,5 @@ void parallel_string_processing(char *buffer, size_t size) {
             }
         }
     }
+#endif
 }

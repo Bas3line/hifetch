@@ -57,15 +57,34 @@ make bench    # Performance benchmarking
 ## Build Targets
 
 - `make` - Build main hifetch binary
+- `make static` - Build static binary (for older distributions)
 - `make hitop` - Build process monitor
 - `make bench` - Performance benchmarks
 - `make clean` - Clean build artifacts
 
 ## System Requirements
 
+### Minimum Requirements
 - Linux-based operating system
-- GCC compiler (C2x standard support)
-- Minimal dependencies: libc, libpthread, libm
+- x86_64 architecture
+- GLIBC 2.17+ (most distributions from 2013+)
+
+### Pre-installed Dependencies
+**Ubuntu/Debian:**
+```bash
+sudo apt update && sudo apt install gcc libc6-dev
+```
+
+**Fedora/RHEL/CentOS:**
+```bash
+sudo dnf install gcc glibc-devel
+# or: sudo yum install gcc glibc-devel
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S gcc glibc
+```
 
 ## Performance Goals
 
