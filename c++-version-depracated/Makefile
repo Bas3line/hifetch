@@ -87,7 +87,7 @@ debug: CXXFLAGS += -DDEBUG -g3 -fsanitize=address -fno-omit-frame-pointer
 debug: directories $(TARGET)
 	@echo -e "$(MAGENTA)Debug build completed$(RESET)"
 
-release: CXXFLAGS = -std=c++23 -O3 -DNDEBUG -march=native -flto -Iinclude
+release: CXXFLAGS = -std=c++23 -O3 -DNDEBUG -march=native -mtune=native -flto -ffast-math -funroll-loops -fomit-frame-pointer -finline-functions -Iinclude
 release: directories $(TARGET)
 	@echo -e "$(GREEN)Release build completed$(RESET)"
 

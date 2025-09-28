@@ -1,11 +1,75 @@
 #pragma once
 
 #include "common.hpp"
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <atomic>
 #include <chrono>
 #include <string>
+#include <memory>
+#include <cstring>
+
+#define CACHE_LINE_SIZE 64
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#define FORCE_INLINE __attribute__((always_inline)) inline
 
 namespace sysfetch {
+
+struct alignas(CACHE_LINE_SIZE) CachedSystemInfo {
+    std::atomic<uint64_t> timestamp{0};
+    std::atomic<bool> valid{false};
+
+    alignas(8) char os_name[128];
+    alignas(8) char kernel_version[64];
+    alignas(8) char hostname[64];
+    alignas(8) char username[32];
+    alignas(8) char shell[64];
+    alignas(8) char cpu_model[256];
+    std::atomic<int> cpu_cores{0};
+    std::atomic<double> cpu_usage{0.0};
+    std::atomic<std::size_t> total_memory{0};
+    std::atomic<std::size_t> used_memory{0};
+    std::atomic<std::size_t> available_memory{0};
+    alignas(8) char uptime[32];
+    std::atomic<int> process_count{0};
+};
+
+class MemoryMappedCache {
+private:
+    void* cache_ptr_ = nullptr;
+    size_t cache_size_ = sizeof(CachedSystemInfo);
+    int fd_ = -1;
+    const char* cache_path_ = "/tmp/sysfetch_cache";
+
+public:
+    FORCE_INLINE MemoryMappedCache() noexcept {
+        fd_ = open(cache_path_, O_CREAT | O_RDWR, 0644);
+        if (likely(fd_ >= 0)) {
+            if (ftruncate(fd_, cache_size_) == 0) {
+                cache_ptr_ = mmap(nullptr, cache_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+                if (unlikely(cache_ptr_ == MAP_FAILED)) {
+                    cache_ptr_ = nullptr;
+                }
+            }
+        }
+    }
+
+    ~MemoryMappedCache() noexcept {
+        if (cache_ptr_) munmap(cache_ptr_, cache_size_);
+        if (fd_ >= 0) close(fd_);
+    }
+
+    FORCE_INLINE CachedSystemInfo* get() noexcept {
+        return static_cast<CachedSystemInfo*>(cache_ptr_);
+    }
+
+    FORCE_INLINE bool valid() const noexcept {
+        return cache_ptr_ != nullptr;
+    }
+};
 
 struct SystemInfo {
     std::string os_name;
@@ -228,7 +292,6 @@ struct WeatherData {
     std::atomic<double> feels_like{0.0};
     std::chrono::system_clock::time_point last_updated;
 
-    // copy constructor for atomic members
     WeatherData() = default;
     WeatherData(const WeatherData& other)
         : temperature(other.temperature.load())

@@ -20,6 +20,8 @@ SystemFetcher::SystemFetcher() {
     weather_manager_ = std::make_unique<weather::WeatherManager>();
     display_manager_ = std::make_unique<display::DisplayManager>(*config_);
 
+    system::init_fast_cache();
+
     load_config();
     start_background_updates();
 }
@@ -80,21 +82,24 @@ void SystemFetcher::stop_background_updates() noexcept {
 }
 
 void SystemFetcher::gather_system_info() {
-    info_.os_name = system::get_os_info().value_or("Unknown");
-    info_.kernel_version = system::get_kernel_version().value_or("Unknown");
-    info_.hostname = system::get_hostname().value_or("Unknown");
-    info_.username = system::get_username().value_or("Unknown");
-    info_.shell = system::get_shell().value_or("Unknown");
+    system::update_cached_info();
+
+    if (!system::get_cached_system_info(info_)) {
+        info_.os_name = system::get_os_info().value_or("Unknown");
+        info_.kernel_version = system::get_kernel_version().value_or("Unknown");
+        info_.hostname = system::get_hostname().value_or("Unknown");
+        info_.username = system::get_username().value_or("Unknown");
+        info_.shell = system::get_shell().value_or("Unknown");
+        info_.cpu_model = system::get_cpu_model().value_or("Unknown");
+        info_.cpu_cores.store(system::get_cpu_cores());
+        info_.uptime = system::get_uptime().value_or("Unknown");
+        system::get_memory_info(info_);
+    }
+
     info_.desktop_environment = system::get_desktop_environment().value_or("Unknown");
     info_.window_manager = system::get_window_manager().value_or("Unknown");
-    info_.cpu_model = system::get_cpu_model().value_or("Unknown");
-    info_.cpu_cores.store(system::get_cpu_cores());
-
-    system::get_memory_info(info_);
-
     info_.gpu_info = system::get_gpu_info().value_or("Unknown");
     info_.disk_info = system::get_disk_info();
-    info_.uptime = system::get_uptime().value_or("Unknown");
     info_.local_ip = system::get_local_ip().value_or("Unknown");
     info_.public_ip = system::get_public_ip().value_or("Unknown");
     info_.network_interface = system::get_network_interface().value_or("Unknown");
@@ -118,7 +123,6 @@ void SystemFetcher::gather_system_info() {
     info_.public_ipv6 = "";
     info_.default_gateway = "Unknown";
 
-    info_.process_count.store(100);
     info_.thread_count.store(1000);
     info_.init_system = "systemd";
     info_.compiler = "gcc";

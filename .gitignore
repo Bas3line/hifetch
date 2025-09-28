@@ -1,1 +1,7 @@
 obj/
+bin/
+
+go/
+go-server/
+
+.vscode

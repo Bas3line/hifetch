@@ -48,4 +48,8 @@ void get_network_stats(SystemInfo& info) noexcept;
 [[nodiscard]] std::optional<std::string> get_init_system() noexcept;
 [[nodiscard]] std::optional<std::string> get_compiler() noexcept;
 
+void init_fast_cache() noexcept;
+[[nodiscard]] bool update_cached_info() noexcept;
+[[nodiscard]] bool get_cached_system_info(SystemInfo& info) noexcept;
+
 }
