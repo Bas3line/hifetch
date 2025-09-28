@@ -2,6 +2,11 @@
 
 A high-performance system information tool written in C that delivers comprehensive system analysis with optimized speed.
 
+<p align="center">
+  <img src="public/arch.png" alt="HiFetch on Arch Linux" width="45%">
+  <img src="public/debian.png" alt="HiFetch on Debian" width="45%">
+</p>
+
 > **Status**: Under Active Development
 
 ## Features
