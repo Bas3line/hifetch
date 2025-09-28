@@ -1,65 +1,114 @@
 #define _GNU_SOURCE
 #include "sysfetch.h"
+#include <dirent.h>
 #include <pwd.h>
 #include <sys/statvfs.h>
+#include <sys/mman.h>
+#include <pthread.h>
+#include <immintrin.h>
+#include <stdbool.h>
+#include <math.h>
 
-static void get_hostname(SystemInfo *info) {
+static SystemInfo *cached_info = NULL;
+static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static double last_update = 0.0;
+
+void init_fast_cache(void) {
+    cached_info = mmap(NULL, sizeof(SystemInfo), PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (cached_info != MAP_FAILED) {
+        madvise(cached_info, sizeof(SystemInfo), MADV_WILLNEED);
+    }
+}
+
+static inline void get_hostname(SystemInfo *info) {
+    if (!info) return;
+
     if (gethostname(info->hostname, sizeof(info->hostname)) != 0) {
-        strcpy(info->hostname, "unknown");
-    }
-}
-
-static void get_username(SystemInfo *info) {
-    const char *user = getenv("USER");
-    if (user) {
-        strncpy(info->username, user, sizeof(info->username) - 1);
+        strncpy(info->hostname, "unknown", sizeof(info->hostname) - 1);
+        info->hostname[sizeof(info->hostname) - 1] = '\0';
     } else {
-        strcpy(info->username, "unknown");
+        info->hostname[sizeof(info->hostname) - 1] = '\0';
     }
 }
 
-static void get_os_info(SystemInfo *info) {
-    char buffer[BUF_SIZE];
+static inline void get_username(SystemInfo *info) {
+    if (!info) return;
+
+    const char *user = getenv("USER");
+    if (user && strlen(user) > 0) {
+        strncpy(info->username, user, sizeof(info->username) - 1);
+        info->username[sizeof(info->username) - 1] = '\0';
+    } else {
+        strncpy(info->username, "unknown", sizeof(info->username) - 1);
+        info->username[sizeof(info->username) - 1] = '\0';
+    }
+}
+
+static inline void get_os_info(SystemInfo *info) {
+    if (!info) return;
+
+    char buffer[2048];
     if (read_file_fast("/etc/os-release", buffer, sizeof(buffer))) {
         char temp[MAX_STR];
         get_string_between(buffer, "PRETTY_NAME=\"", "\"", temp);
-        if (temp[0]) {
-            strcpy(info->os_name, temp);
+        if (temp[0] && strlen(temp) > 0) {
+            strncpy(info->os_name, temp, sizeof(info->os_name) - 1);
+            info->os_name[sizeof(info->os_name) - 1] = '\0';
             return;
         }
     }
-    strcpy(info->os_name, "Linux");
+    strncpy(info->os_name, "Linux", sizeof(info->os_name) - 1);
+    info->os_name[sizeof(info->os_name) - 1] = '\0';
 }
 
-static void get_kernel(SystemInfo *info) {
+static inline void get_kernel(SystemInfo *info) {
+    if (!info) return;
+
     struct utsname uts;
-    if (uname(&uts) == 0) {
-        snprintf(info->kernel, sizeof(info->kernel), "%s %s", uts.sysname, uts.release);
+    memset(&uts, 0, sizeof(uts));
+
+    if (__builtin_expect(uname(&uts) == 0, 1)) {
+        int result = snprintf(info->kernel, sizeof(info->kernel), "%s %s", uts.sysname, uts.release);
+        if (result < 0 || result >= (int)sizeof(info->kernel)) {
+            strncpy(info->kernel, "Unknown", sizeof(info->kernel) - 1);
+            info->kernel[sizeof(info->kernel) - 1] = '\0';
+        }
     } else {
-        strcpy(info->kernel, "Unknown");
+        strncpy(info->kernel, "Unknown", sizeof(info->kernel) - 1);
+        info->kernel[sizeof(info->kernel) - 1] = '\0';
     }
 }
 
-static void get_uptime(SystemInfo *info) {
+static inline void get_uptime(SystemInfo *info) {
     struct sysinfo si;
-    if (sysinfo(&si) == 0) {
-        long hours = si.uptime / 3600;
+    if (__builtin_expect(sysinfo(&si) == 0, 1)) {
+        long days = si.uptime / 86400;
+        long hours = (si.uptime % 86400) / 3600;
         long minutes = (si.uptime % 3600) / 60;
-        snprintf(info->uptime, sizeof(info->uptime), "%ldh %ldm", hours, minutes);
+
+        if (days > 0) {
+            snprintf(info->uptime, sizeof(info->uptime), "%ld day%s, %ld hour%s, %ld min%s",
+                    days, days != 1 ? "s" : "",
+                    hours, hours != 1 ? "s" : "",
+                    minutes, minutes != 1 ? "s" : "");
+        } else {
+            snprintf(info->uptime, sizeof(info->uptime), "%ldh %ldm", hours, minutes);
+        }
     } else {
-        strcpy(info->uptime, "Unknown");
+        memcpy(info->uptime, "Unknown", 8);
     }
 }
 
-static void get_shell(SystemInfo *info) {
+static inline void get_shell(SystemInfo *info) {
     const char *shell = getenv("SHELL");
     if (shell) {
         const char *name = strrchr(shell, '/');
         if (name) {
             name++;
-            char *version_cmd = malloc(256);
-            snprintf(version_cmd, 256, "%s --version 2>/dev/null | head -1", name);
-            char *version = execute_cmd(version_cmd);
+            char version_cmd[256];
+            snprintf(version_cmd, sizeof(version_cmd), "%s --version 2>/dev/null | head -1", name);
+            char *version = execute_cmd_fast(version_cmd);
             if (version && strstr(version, name)) {
                 char *space = strchr(version, ' ');
                 if (space) {
@@ -74,17 +123,30 @@ static void get_shell(SystemInfo *info) {
             } else {
                 strcpy(info->shell, name);
             }
-            free(version_cmd);
         } else {
             strcpy(info->shell, shell);
         }
     } else {
-        strcpy(info->shell, "unknown");
+        memcpy(info->shell, "unknown", 8);
     }
 }
 
-static void get_cpu_info(SystemInfo *info) {
-    char buffer[BUF_SIZE];
+void get_cpu_frequency(SystemInfo *info) {
+    char *freq = read_sysfs_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+    if (freq) {
+        info->cpu_freq = atof(freq) / 1000000.0;
+    } else {
+        char *max_freq = read_sysfs_string("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
+        if (max_freq) {
+            info->cpu_freq = atof(max_freq) / 1000000.0;
+        } else {
+            info->cpu_freq = 0.0;
+        }
+    }
+}
+
+static inline void get_cpu_info(SystemInfo *info) {
+    char buffer[4096];
     if (read_file_fast("/proc/cpuinfo", buffer, sizeof(buffer))) {
         char *line = strtok(buffer, "\n");
         while (line) {
@@ -92,7 +154,7 @@ static void get_cpu_info(SystemInfo *info) {
                 char *colon = strchr(line, ':');
                 if (colon) {
                     colon += 2;
-                    strncpy(info->cpu_model, colon, sizeof(info->cpu_model) - 1);
+                    strncpy(info->cpu_model, colon, sizeof(info->cpu_model) - 32);
                     break;
                 }
             }
@@ -100,18 +162,53 @@ static void get_cpu_info(SystemInfo *info) {
         }
     }
     if (!info->cpu_model[0]) {
-        strcpy(info->cpu_model, "Unknown CPU");
+        memcpy(info->cpu_model, "Unknown CPU", 12);
     }
 
     info->cpu_cores = sysconf(_SC_NPROCESSORS_ONLN);
+    get_cpu_frequency(info);
 
-    char cores_str[32];
-    snprintf(cores_str, sizeof(cores_str), " (%d)", info->cpu_cores);
+    char cores_str[48];
+    if (info->cpu_freq > 0) {
+        snprintf(cores_str, sizeof(cores_str), " (%d) @ %.2f GHz", info->cpu_cores, info->cpu_freq);
+    } else {
+        snprintf(cores_str, sizeof(cores_str), " (%d)", info->cpu_cores);
+    }
     strncat(info->cpu_model, cores_str, sizeof(info->cpu_model) - strlen(info->cpu_model) - 1);
 }
 
-static void get_memory_info(SystemInfo *info) {
-    char buffer[BUF_SIZE];
+void get_swap_info(SystemInfo *info) {
+    char buffer[2048];
+    if (read_file_fast("/proc/meminfo", buffer, sizeof(buffer))) {
+        unsigned long swap_total = 0, swap_free = 0;
+        char *line = strtok(buffer, "\n");
+
+        while (line) {
+            if (sscanf(line, "SwapTotal: %lu kB", &swap_total) == 1) {
+                line = strtok(NULL, "\n");
+                continue;
+            }
+            if (sscanf(line, "SwapFree: %lu kB", &swap_free) == 1) {
+                break;
+            }
+            line = strtok(NULL, "\n");
+        }
+
+        if (swap_total > 0) {
+            unsigned long swap_used = swap_total - swap_free;
+            double used_gb = swap_used / 1048576.0;
+            double total_gb = swap_total / 1048576.0;
+            int percent = (int)((double)swap_used / swap_total * 100);
+            snprintf(info->swap, sizeof(info->swap), "%.2f MiB / %.2f GiB (%d%%)",
+                    used_gb * 1024, total_gb, percent);
+        } else {
+            strcpy(info->swap, "No swap");
+        }
+    }
+}
+
+static inline void get_memory_info(SystemInfo *info) {
+    char buffer[2048];
     if (read_file_fast("/proc/meminfo", buffer, sizeof(buffer))) {
         unsigned long mem_total = 0, mem_available = 0;
 
@@ -135,11 +232,14 @@ static void get_memory_info(SystemInfo *info) {
 
             snprintf(info->memory, sizeof(info->memory), "%.2f GiB / %.2f GiB (%d%%)",
                      used_gb, total_gb, percent);
+        } else {
+            memcpy(info->memory, "Unknown", 8);
         }
+    } else {
+        memcpy(info->memory, "Unknown", 8);
     }
-    if (!info->memory[0]) {
-        strcpy(info->memory, "Unknown");
-    }
+
+    get_swap_info(info);
 }
 
 static void get_disk_info(SystemInfo *info) {
@@ -150,7 +250,7 @@ static void get_disk_info(SystemInfo *info) {
         unsigned long used = total - free;
         int percent = total > 0 ? (int)((double)used / total * 100) : 0;
 
-        char *fstype = execute_cmd("findmnt -n -o FSTYPE /");
+        char *fstype = execute_cmd_fast("findmnt -n -o FSTYPE /");
         snprintf(info->disk, sizeof(info->disk), "Disk (/): %luG/%luG (%d%%) - %s",
                  used, total, percent, fstype ? fstype : "unknown");
     } else {
@@ -158,102 +258,263 @@ static void get_disk_info(SystemInfo *info) {
     }
 }
 
-static void get_gpu_info(SystemInfo *info) {
-    char *gpu = execute_cmd("lspci | grep -E 'VGA|3D|Display' | head -1 | cut -d: -f3");
-    if (gpu && gpu[0]) {
-        trim_string(gpu);
-        strncpy(info->gpu, gpu, sizeof(info->gpu) - 1);
-    } else {
-        strcpy(info->gpu, "Unknown GPU");
+void get_all_gpus(SystemInfo *info) {
+    if (!info) return;
+
+    info->gpu_count = 0;
+
+    // Try faster PCI device enumeration first
+    char *all_gpus = execute_cmd_fast("lspci -nn | grep -E 'VGA|3D|Display' | head -4");
+    if (!all_gpus || strlen(all_gpus) == 0) {
+        strncpy(info->gpu[0], "Unknown GPU", MAX_STR - 1);
+        info->gpu[0][MAX_STR - 1] = '\0';
+        info->gpu_count = 1;
+        return;
+    }
+
+    char temp_buffer[8192];
+    strncpy(temp_buffer, all_gpus, sizeof(temp_buffer) - 1);
+    temp_buffer[sizeof(temp_buffer) - 1] = '\0';
+
+    char *line = strtok(temp_buffer, "\n");
+    while (line && info->gpu_count < MAX_GPUS) {
+        trim_string(line);
+        if (strlen(line) > 0 && strlen(line) < MAX_STR - 20) {
+            int result;
+            if (strstr(line, "Intel")) {
+                result = snprintf(info->gpu[info->gpu_count], MAX_STR, "%s [Integrated]", line);
+            } else if (strstr(line, "NVIDIA") || strstr(line, "GeForce")) {
+                result = snprintf(info->gpu[info->gpu_count], MAX_STR, "%s [Discrete]", line);
+            } else if (strstr(line, "AMD") || strstr(line, "ATI") || strstr(line, "Radeon")) {
+                result = snprintf(info->gpu[info->gpu_count], MAX_STR, "%s [Discrete]", line);
+            } else {
+                strncpy(info->gpu[info->gpu_count], line, MAX_STR - 1);
+                info->gpu[info->gpu_count][MAX_STR - 1] = '\0';
+                result = 0;
+            }
+
+            if (result < 0 || result >= MAX_STR) {
+                strncpy(info->gpu[info->gpu_count], "GPU Info Too Long", MAX_STR - 1);
+                info->gpu[info->gpu_count][MAX_STR - 1] = '\0';
+            }
+            info->gpu_count++;
+        }
+        line = strtok(NULL, "\n");
+    }
+
+    if (info->gpu_count == 0) {
+        strncpy(info->gpu[0], "Unknown GPU", MAX_STR - 1);
+        info->gpu[0][MAX_STR - 1] = '\0';
+        info->gpu_count = 1;
     }
 }
 
-static void get_packages(SystemInfo *info) {
-    int total = 0;
-    char result[MAX_STR] = "";
+static int count_directory_entries(const char *path) {
+    DIR *dir = opendir(path);
+    if (!dir) return 0;
 
-    char *pacman = execute_cmd("pacman -Qq 2>/dev/null | wc -l");
-    if (pacman) {
-        int count = atoi(pacman);
-        if (count > 0) {
-            total += count;
-            snprintf(result + strlen(result), sizeof(result) - strlen(result),
-                     "%s%d (pacman)", strlen(result) ? ", " : "", count);
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+            count++;
         }
     }
+    closedir(dir);
+    return count;
+}
 
-    char *flatpak = execute_cmd("flatpak list 2>/dev/null | wc -l");
-    if (flatpak) {
-        int count = atoi(flatpak);
-        if (count > 0) {
-            total += count;
-            snprintf(result + strlen(result), sizeof(result) - strlen(result),
-                     "%s%d (flatpak)", strlen(result) ? ", " : "", count);
-        }
+static inline void get_packages(SystemInfo *info) {
+    char result[MAX_STR] = "";
+    int total = 0;
+
+    // Fast pacman count using filesystem
+    int pacman_count = count_directory_entries("/var/lib/pacman/local");
+    if (pacman_count > 0) {
+        total += pacman_count;
+        snprintf(result + strlen(result), sizeof(result) - strlen(result),
+                 "%d (pacman)", pacman_count);
+    }
+
+    // Fast flatpak count using filesystem
+    int flatpak_count = count_directory_entries("/var/lib/flatpak/app");
+    const char *user = getenv("USER");
+    if (user) {
+        char user_flatpak_path[512];
+        snprintf(user_flatpak_path, sizeof(user_flatpak_path), "/home/%s/.local/share/flatpak/app", user);
+        flatpak_count += count_directory_entries(user_flatpak_path);
+    }
+    if (flatpak_count > 0) {
+        total += flatpak_count;
+        snprintf(result + strlen(result), sizeof(result) - strlen(result),
+                 "%s%d (flatpak)", strlen(result) ? ", " : "", flatpak_count);
+    }
+
+    // Keep shell commands for less common package managers (they're usually faster)
+    char *snap = execute_cmd_fast("which snap >/dev/null 2>&1 && snap list 2>/dev/null | tail -n +2 | wc -l");
+    if (snap && atoi(snap) > 0) {
+        int count = atoi(snap);
+        total += count;
+        snprintf(result + strlen(result), sizeof(result) - strlen(result),
+                 "%s%d (snap)", strlen(result) ? ", " : "", count);
+    }
+
+    char *pip = execute_cmd_fast("which pip >/dev/null 2>&1 && pip list --format=freeze 2>/dev/null | wc -l");
+    if (pip && atoi(pip) > 0) {
+        int count = atoi(pip);
+        total += count;
+        snprintf(result + strlen(result), sizeof(result) - strlen(result),
+                 "%s%d (pip)", strlen(result) ? ", " : "", count);
     }
 
     strcpy(info->packages, result[0] ? result : "Unknown");
 }
 
-static void get_desktop_info(SystemInfo *info) {
+static inline void get_desktop_info(SystemInfo *info) {
     char *de = getenv("XDG_CURRENT_DESKTOP");
     if (!de) de = getenv("DESKTOP_SESSION");
     if (de) {
         strcpy(info->de, de);
+
+        if (strstr(de, "KDE")) {
+            char *kde_version = execute_cmd_fast("plasmashell --version 2>/dev/null | cut -d' ' -f2");
+            if (kde_version) {
+                snprintf(info->de_version, sizeof(info->de_version), "KDE Plasma %s", kde_version);
+            } else {
+                strcpy(info->de_version, "KDE Plasma");
+            }
+        } else if (strstr(de, "GNOME")) {
+            char *gnome_version = execute_cmd_fast("gnome-shell --version 2>/dev/null | cut -d' ' -f3");
+            if (gnome_version) {
+                snprintf(info->de_version, sizeof(info->de_version), "GNOME %s", gnome_version);
+            } else {
+                strcpy(info->de_version, "GNOME");
+            }
+        } else {
+            strcpy(info->de_version, de);
+        }
     } else {
         strcpy(info->de, "Unknown");
+        strcpy(info->de_version, "Unknown");
     }
 
     char *wm_wayland = getenv("WAYLAND_DISPLAY");
-    char *wm_x11 = execute_cmd("xprop -root _NET_WM_NAME 2>/dev/null | cut -d'\"' -f2");
+    char *wm_x11 = execute_cmd_fast("xprop -root _NET_WM_NAME 2>/dev/null | cut -d'\"' -f2");
 
     if (wm_wayland) {
         if (strstr(info->de, "KDE")) {
-            strcpy(info->wm, "KWin (wayland)");
+            strcpy(info->wm, "KWin (Wayland)");
+        } else if (strstr(info->de, "GNOME")) {
+            strcpy(info->wm, "Mutter (Wayland)");
         } else {
-            strcpy(info->wm, "Wayland");
+            strcpy(info->wm, "Wayland Compositor");
         }
     } else if (wm_x11 && wm_x11[0]) {
-        strcpy(info->wm, wm_x11);
+        snprintf(info->wm, sizeof(info->wm), "%s (X11)", wm_x11);
     } else {
         strcpy(info->wm, "Unknown");
     }
 }
 
-static void get_theme_info(SystemInfo *info) {
-    strcpy(info->theme, "Unknown");
-    strcpy(info->icons, "Unknown");
-    strcpy(info->font, "Unknown");
-    strcpy(info->cursor, "Unknown");
+void get_detailed_theme_info(SystemInfo *info) {
+    char *gtk_theme = execute_cmd_fast("gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null | tr -d \"'\"");
+    if (gtk_theme && strlen(gtk_theme) > 0) {
+        strcpy(info->gtk_theme, gtk_theme);
+    } else {
+        strcpy(info->gtk_theme, "Unknown");
+    }
+
+    char *qt_theme = execute_cmd_fast("kreadconfig5 --group General --key ColorScheme 2>/dev/null");
+    if (qt_theme && strlen(qt_theme) > 0) {
+        strcpy(info->qt_theme, qt_theme);
+    } else {
+        strcpy(info->qt_theme, "Unknown");
+    }
+
+    char *wm_theme = execute_cmd_fast("kreadconfig5 --group org.kde.kdecoration2 --key theme 2>/dev/null");
+    if (wm_theme && strlen(wm_theme) > 0) {
+        strcpy(info->wm_theme, wm_theme);
+    } else {
+        strcpy(info->wm_theme, "Unknown");
+    }
+
+    char *icon_theme = execute_cmd_fast("gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null | tr -d \"'\"");
+    if (!icon_theme || strlen(icon_theme) == 0) {
+        icon_theme = execute_cmd_fast("kreadconfig5 --group Icons --key Theme 2>/dev/null");
+    }
+    if (icon_theme && strlen(icon_theme) > 0) {
+        strcpy(info->icon_theme, icon_theme);
+    } else {
+        strcpy(info->icon_theme, "Unknown");
+    }
+
+    char *cursor_theme = execute_cmd_fast("gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null | tr -d \"'\"");
+    if (!cursor_theme || strlen(cursor_theme) == 0) {
+        cursor_theme = execute_cmd_fast("kreadconfig5 --group General --key cursorTheme 2>/dev/null");
+    }
+    if (cursor_theme && strlen(cursor_theme) > 0) {
+        char cursor_size_str[32] = "";
+        char *cursor_size = execute_cmd_fast("gsettings get org.gnome.desktop.interface cursor-size 2>/dev/null");
+        if (cursor_size && atoi(cursor_size) > 0) {
+            snprintf(cursor_size_str, sizeof(cursor_size_str), " (%spx)", cursor_size);
+        }
+        snprintf(info->cursor_theme, sizeof(info->cursor_theme), "%s%s", cursor_theme, cursor_size_str);
+    } else {
+        strcpy(info->cursor_theme, "Unknown");
+    }
+
+    char *font = execute_cmd_fast("gsettings get org.gnome.desktop.interface font-name 2>/dev/null | tr -d \"'\"");
+    if (!font || strlen(font) == 0) {
+        font = execute_cmd_fast("kreadconfig5 --group General --key font 2>/dev/null | cut -d',' -f1");
+    }
+    if (font && strlen(font) > 0) {
+        strcpy(info->font, font);
+    } else {
+        strcpy(info->font, "Unknown");
+    }
 }
 
-static void get_terminal_info(SystemInfo *info) {
+static inline void get_terminal_info(SystemInfo *info) {
     char *term = getenv("TERM_PROGRAM");
     if (!term) term = getenv("TERMINAL");
+    if (!term) {
+        char *ppid_str = execute_cmd_fast("ps -o comm= -p $PPID 2>/dev/null");
+        if (ppid_str) term = ppid_str;
+    }
     if (term) {
-        strcpy(info->terminal, term);
+        char *version = execute_cmd_fast("which konsole >/dev/null 2>&1 && konsole --version 2>/dev/null | head -1 | cut -d' ' -f2");
+        if (version && strlen(version) > 0) {
+            snprintf(info->terminal, sizeof(info->terminal), "%s %s", term, version);
+        } else {
+            strcpy(info->terminal, term);
+        }
     } else {
         strcpy(info->terminal, "Unknown");
     }
     strcpy(info->terminal_font, "Unknown");
 }
 
-static void get_network_info(SystemInfo *info) {
-    char *ip_cmd = "ip route get 1.1.1.1 2>/dev/null | grep -Po 'src \\K\\S+' | head -1";
-    char *interface_cmd = "ip route get 1.1.1.1 2>/dev/null | grep -Po 'dev \\K\\S+' | head -1";
+static inline void get_network_info(SystemInfo *info) {
+    char *ip = execute_cmd_fast("ip route get 1.1.1.1 2>/dev/null | grep -o 'src [0-9.]*' | cut -d' ' -f2");
+    char *interface = execute_cmd_fast("ip route get 1.1.1.1 2>/dev/null | grep -o 'dev [a-zA-Z0-9]*' | cut -d' ' -f2");
 
-    char *ip = execute_cmd(ip_cmd);
-    char *interface = execute_cmd(interface_cmd);
-
-    if (ip && interface) {
-        snprintf(info->local_ip, sizeof(info->local_ip), "Local IP (%s): %s", interface, ip);
+    if (ip && interface && strlen(ip) > 0 && strlen(interface) > 0) {
+        char subnet_cmd[512];
+        snprintf(subnet_cmd, sizeof(subnet_cmd), "ip route | grep %s | grep -v default | head -1 | cut -d' ' -f1", interface);
+        char *subnet = execute_cmd_fast(subnet_cmd);
+        if (subnet && strlen(subnet) > 0) {
+            snprintf(info->local_ip, sizeof(info->local_ip), "Local IP (%s): %s/%s", interface, ip,
+                    strchr(subnet, '/') ? strchr(subnet, '/') + 1 : "24");
+        } else {
+            snprintf(info->local_ip, sizeof(info->local_ip), "Local IP (%s): %s", interface, ip);
+        }
     } else {
         strcpy(info->local_ip, "No network");
     }
 }
 
-static void get_battery_info(SystemInfo *info) {
-    char buffer[BUF_SIZE];
+static inline void get_battery_info(SystemInfo *info) {
+    char buffer[256];
     if (read_file_fast("/sys/class/power_supply/BAT0/capacity", buffer, sizeof(buffer))) {
         int capacity = atoi(buffer);
 
@@ -264,39 +525,117 @@ static void get_battery_info(SystemInfo *info) {
             status = status_buf;
         }
 
-        char *emoji = "";
-        if (strcmp(status, "Charging") == 0) emoji = "⚡";
-        else if (strcmp(status, "Full") == 0) emoji = "🔋";
-        else if (capacity > 75) emoji = "🔋";
-        else if (capacity > 50) emoji = "🔋";
-        else if (capacity > 25) emoji = "🪫";
-        else emoji = "🪫";
+        char ac_status[256];
+        bool ac_connected = false;
+        if (read_file_fast("/sys/class/power_supply/ADP1/online", ac_status, sizeof(ac_status)) ||
+            read_file_fast("/sys/class/power_supply/AC0/online", ac_status, sizeof(ac_status)) ||
+            read_file_fast("/sys/class/power_supply/ACAD/online", ac_status, sizeof(ac_status))) {
+            ac_connected = (atoi(ac_status) == 1);
+        }
 
-        snprintf(info->battery, sizeof(info->battery), "Battery: %d%% %s %s",
-                 capacity, status, emoji);
+        char status_str[128];
+        if (ac_connected && strcmp(status, "Full") == 0) {
+            strcpy(status_str, "Full");
+        } else if (strcmp(status, "Charging") == 0) {
+            strcpy(status_str, "Charging");
+        } else if (ac_connected) {
+            strcpy(status_str, "AC Connected");
+        } else {
+            strcpy(status_str, status);
+        }
+
+        snprintf(info->battery, sizeof(info->battery), "Battery (Primary): %d%% [%s]",
+                 capacity, status_str);
     } else {
         strcpy(info->battery, "No battery");
     }
 }
 
-static void get_display_info(SystemInfo *info) {
-    char *res_cmd = "xrandr 2>/dev/null | grep ' connected' | grep -o '[0-9]*x[0-9]*' | head -1";
-    char *refresh_cmd = "xrandr 2>/dev/null | grep '\\*' | grep -o '[0-9]*\\.[0-9]*' | head -1";
+static inline void get_display_info(SystemInfo *info) {
+    char *monitor_info = execute_cmd_fast("xrandr --query | grep ' connected' | head -1");
+    if (monitor_info && strlen(monitor_info) > 0) {
+        char monitor_name[64] = "";
+        char resolution[32] = "";
+        char refresh_rate[16] = "";
+        char display_model[128] = "";
 
-    char *resolution = execute_cmd(res_cmd);
-    char *refresh = execute_cmd(refresh_cmd);
+        sscanf(monitor_info, "%63s connected %31s", monitor_name, resolution);
 
-    if (resolution && refresh) {
-        snprintf(info->display, sizeof(info->display), "Display: %s @ %.0f Hz",
-                 resolution, atof(refresh));
-    } else if (resolution) {
-        snprintf(info->display, sizeof(info->display), "Display: %s", resolution);
+        char *refresh_line = execute_cmd_fast("xrandr --query | grep '\\*' | head -1");
+        if (refresh_line) {
+            char *refresh_pos = strstr(refresh_line, "*");
+            if (refresh_pos) {
+                refresh_pos++;
+                while (*refresh_pos == ' ') refresh_pos++;
+                float rate;
+                if (sscanf(refresh_pos, "%f", &rate) == 1) {
+                    snprintf(refresh_rate, sizeof(refresh_rate), "%.0f", rate);
+                }
+            }
+        }
+
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "xrandr --verbose | grep -A 10 '%s' | grep -E 'Brightness|EDID' -A 5 | head -1", monitor_name);
+        char *edid_info = execute_cmd_fast(cmd);
+
+        char *model_cmd = execute_cmd_fast("ddcutil detect 2>/dev/null | grep 'Model:' | head -1 | cut -d: -f2");
+        if (model_cmd && strlen(model_cmd) > 0) {
+            trim_string(model_cmd);
+            strncpy(display_model, model_cmd, sizeof(display_model) - 1);
+        } else {
+            char *dmi_monitor = execute_cmd_fast("cat /sys/class/drm/card*/card*-*/edid 2>/dev/null | strings | grep -E '^[A-Z]{3}$' | head -1");
+            if (dmi_monitor && strlen(dmi_monitor) > 0) {
+                if (strcmp(dmi_monitor, "BNQ") == 0) {
+                    strcpy(display_model, "BenQ");
+                } else if (strcmp(dmi_monitor, "SAM") == 0) {
+                    strcpy(display_model, "Samsung");
+                } else if (strcmp(dmi_monitor, "DEL") == 0) {
+                    strcpy(display_model, "Dell");
+                } else if (strcmp(dmi_monitor, "LEN") == 0) {
+                    strcpy(display_model, "Lenovo");
+                } else {
+                    strcpy(display_model, dmi_monitor);
+                }
+            } else {
+                strcpy(display_model, "External Monitor");
+            }
+        }
+
+        char *size_info = execute_cmd_fast("xrandr --verbose | grep -A 20 ' connected' | grep 'mm x' | head -1");
+        float inches = 0;
+        if (size_info) {
+            float width_mm = 0, height_mm = 0;
+            if (sscanf(size_info, "%*s %fmm x %fmm", &width_mm, &height_mm) == 2) {
+                inches = sqrt(width_mm * width_mm + height_mm * height_mm) / 25.4;
+            }
+        }
+
+        if (strlen(refresh_rate) > 0 && inches > 0) {
+            snprintf(info->display, sizeof(info->display), "Display (%s): %s @ %s Hz in %.0f\" [External]",
+                    display_model, resolution, refresh_rate, inches);
+        } else if (strlen(refresh_rate) > 0) {
+            snprintf(info->display, sizeof(info->display), "Display (%s): %s @ %s Hz [External]",
+                    display_model, resolution, refresh_rate);
+        } else {
+            snprintf(info->display, sizeof(info->display), "Display (%s): %s [External]",
+                    display_model, resolution);
+        }
     } else {
-        strcpy(info->display, "Display: Unknown");
+        char *wayland_res = execute_cmd_fast("wlr-randr 2>/dev/null | grep 'current' | head -1");
+        if (wayland_res && strlen(wayland_res) > 0) {
+            char resolution[32];
+            if (sscanf(wayland_res, "%*s %31s", resolution) == 1) {
+                snprintf(info->display, sizeof(info->display), "Display: %s [Wayland]", resolution);
+            } else {
+                strcpy(info->display, "Display: Wayland");
+            }
+        } else {
+            strcpy(info->display, "Display: Unknown");
+        }
     }
 }
 
-static void get_locale_info(SystemInfo *info) {
+static inline void get_locale_info(SystemInfo *info) {
     char *locale = getenv("LANG");
     if (locale) {
         strcpy(info->locale, locale);
@@ -306,6 +645,18 @@ static void get_locale_info(SystemInfo *info) {
 }
 
 void get_system_info(SystemInfo *info) {
+    pthread_mutex_lock(&cache_mutex);
+    double current_time = get_time_microseconds();
+
+    if (cached_info && (current_time - last_update) < 1000000) {
+        memcpy(info, cached_info, sizeof(SystemInfo));
+        pthread_mutex_unlock(&cache_mutex);
+        return;
+    }
+    pthread_mutex_unlock(&cache_mutex);
+
+    memset(info, 0, sizeof(SystemInfo));
+
     get_hostname(info);
     get_username(info);
     get_os_info(info);
@@ -315,13 +666,20 @@ void get_system_info(SystemInfo *info) {
     get_cpu_info(info);
     get_memory_info(info);
     get_disk_info(info);
-    get_gpu_info(info);
+    get_all_gpus(info);
     get_packages(info);
     get_desktop_info(info);
-    get_theme_info(info);
+    get_detailed_theme_info(info);
     get_terminal_info(info);
     get_network_info(info);
     get_battery_info(info);
     get_display_info(info);
     get_locale_info(info);
+
+    pthread_mutex_lock(&cache_mutex);
+    if (cached_info != MAP_FAILED) {
+        memcpy(cached_info, info, sizeof(SystemInfo));
+        last_update = current_time;
+    }
+    pthread_mutex_unlock(&cache_mutex);
 }
