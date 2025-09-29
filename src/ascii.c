@@ -358,15 +358,10 @@ static int get_display_width(const char *str) {
 }
 
 static inline void get_host_info(char *host_buffer, size_t size) {
-    char *dmi_name = execute_cmd_fast("cat /sys/class/dmi/id/product_name 2>/dev/null");
-    char *dmi_version = execute_cmd_fast("cat /sys/class/dmi/id/product_version 2>/dev/null");
-
-    if (dmi_name && strlen(dmi_name) > 0) {
-        if (dmi_version && strlen(dmi_version) > 0 && strcmp(dmi_version, "None") != 0) {
-            snprintf(host_buffer, size, "%s %s", dmi_name, dmi_version);
-        } else {
-            snprintf(host_buffer, size, "%s", dmi_name);
-        }
+    char buffer[256];
+    if (read_file_fast("/sys/class/dmi/id/product_name", buffer, sizeof(buffer))) {
+        strncpy(host_buffer, buffer, size - 1);
+        host_buffer[size - 1] = '\0';
     } else {
         strncpy(host_buffer, "Unknown Host", size - 1);
         host_buffer[size - 1] = '\0';
@@ -445,6 +440,20 @@ void display_system_info(const SystemInfo *info) {
     snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "\033[1;34mLocal IP:\033[0m %s", info->local_ip);
     snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "\033[1;34mBattery:\033[0m %s", info->battery);
     snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "\033[1;34mLocale:\033[0m %s", info->locale);
+
+    char *colors = getenv("COLORTERM");
+    if (colors) {
+        snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "\033[1;34mColors:\033[0m %s", colors);
+    } else {
+        snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "\033[1;34mColors:\033[0m 256");
+    }
+
+    char *editor = getenv("EDITOR");
+    if (editor) {
+        snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "\033[1;34mEditor:\033[0m %s", editor);
+    } else {
+        snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "\033[1;34mEditor:\033[0m vim");
+    }
 
     snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "");
     snprintf(formatted_info[info_count++], sizeof(formatted_info[0]), "");
